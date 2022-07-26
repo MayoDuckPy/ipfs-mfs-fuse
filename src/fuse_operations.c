@@ -9,6 +9,7 @@
 
 #include "fuse_operations.h"
 
+#define CID_LEN  60
 #define BUF_SIZE 1024
 #define IPFS_BIN "ipfsp" " "
 
@@ -137,6 +138,29 @@ static struct mfsf_stat* parse_ipfs_stat(const char* path) {
     return stat;
 }
 
+/* Publish the current root given by IPFS files */
+static int publish_name() {
+    char cid[CID_LEN];
+    FILE* proc = popen(IPFS_BIN "files stat / | head -n1", "r");
+    if (!proc)
+        return -errno;
+
+    fgets(cid, CID_LEN, proc);
+    if (pclose(proc))
+        return -errno;
+
+    char* publish_cmd = IPFS_BIN "name publish %s";
+    char* cmd = malloc(strlen(publish_cmd) + CID_LEN);
+    sprintf(cmd, publish_cmd, cid);
+    proc = popen(cmd, "r");
+    free(cmd);
+
+    if (!proc || pclose(proc))
+        return -errno;
+
+    return 0;
+}
+
 int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi) {
     struct mfsf_stat* mfs_stat = parse_ipfs_stat(path);
     if (!mfs_stat)
@@ -183,7 +207,7 @@ int mfsf_symlink(const char* from, const char* to) {
     if (pclose(proc_out))
         return -errno;
 
-    return 0;
+    return publish_name();
 }
 
 int mfsf_readlink(const char* path, char* buf, size_t size) {

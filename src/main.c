@@ -5,6 +5,7 @@
 #include "fuse_operations.h"
 
 int main(int argc, char** argv) {
+    // TODO: Add option to specify IPFS command and store in FUSE context
     struct fuse_operations mfsf_operations = {
         .getattr  = mfsf_getattr,
         .mknod    = NULL,
