@@ -9,7 +9,7 @@
 
 #include "fuse_operations.h"
 
-#define CID_LEN  60
+#define CID_MAX  60
 #define BUF_SIZE 1024
 #define IPFS_BIN "ipfsp" " "
 
@@ -99,13 +99,17 @@ struct mfsf_path* mfsf_path_create(const char* path) {
 
 /* Read the attributes of a file from ipfs and return it's details. */
 static struct mfsf_stat* parse_ipfs_stat(const char* path) {
-    const char* cmd = IPFS_BIN "files stat %s";
-    int cmd_len = strlen(cmd) + strlen(path);
-    char* full_cmd = malloc(cmd_len);
-    snprintf(full_cmd, cmd_len, cmd, path);
+    const char* stat_cmd = IPFS_BIN "files stat %s";
+    char* cmd = malloc(strlen(stat_cmd) + strlen(path));
 
-    FILE* proc_out = popen(full_cmd, "r");
-    free(full_cmd);
+    if (!cmd) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    sprintf(cmd, stat_cmd, path);
+    FILE* proc_out = popen(cmd, "r");
+    free(cmd);
 
     if (!proc_out)
         return NULL;
@@ -138,21 +142,62 @@ static struct mfsf_stat* parse_ipfs_stat(const char* path) {
     return stat;
 }
 
-/* Publish the current root given by IPFS files */
-static int publish_name() {
-    char cid[CID_LEN];
-    FILE* proc = popen(IPFS_BIN "files stat / | head -n1", "r");
+static char* cid_from_path(const char* path) {
+    char* stat_cmd = IPFS_BIN "files stat %s";
+
+    char* cid = malloc(CID_MAX);
+    char* cmd = malloc(strlen(stat_cmd) + CID_MAX);
+    if (!cid || !cmd) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    sprintf(cmd, stat_cmd, path);
+    FILE* proc = popen(cmd, "r");
+    free(cmd);
+
     if (!proc)
-        return -errno;
+        return NULL;
 
-    fgets(cid, CID_LEN, proc);
+    fgets(cid, CID_MAX, proc);
     if (pclose(proc))
+        return NULL;
+
+    return cid;
+}
+
+/* Publish the current root given by the IPFS files API */
+static int publish_name() {
+    char* publish_cmd = IPFS_BIN "name publish %s";
+    char* cmd = malloc(strlen(publish_cmd) + CID_MAX);
+
+    char* cid = cid_from_path("/");
+    if (!cid)
         return -errno;
 
-    char* publish_cmd = IPFS_BIN "name publish %s";
-    char* cmd = malloc(strlen(publish_cmd) + CID_LEN);
     sprintf(cmd, publish_cmd, cid);
-    proc = popen(cmd, "r");
+    FILE* proc = popen(cmd, "r");
+    free(cid);
+    free(cmd);
+
+    if (!proc || pclose(proc))
+        return -errno;
+
+    return 0;
+}
+
+/* Pin a specified path given by the IPFS files API */
+static int pin_path(const char* path) {
+    char* pin_cmd = IPFS_BIN "pin add %s";
+    char* cmd = malloc(strlen(pin_cmd) + CID_MAX);
+
+    char* cid = cid_from_path(path);
+    if (!cid)
+        return -errno;
+
+    sprintf(cmd, pin_cmd, cid);
+    FILE* proc = popen(cmd, "r");
+    free(cid);
     free(cmd);
 
     if (!proc || pclose(proc))
@@ -190,13 +235,15 @@ int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi)
 }
 
 int mfsf_symlink(const char* from, const char* to) {
-    char* cmd = IPFS_BIN "files cp %s %s";
-    int cmd_len = strlen(cmd) + strlen(from) + strlen(to);
-    char* full_cmd = malloc(cmd_len);
+    char* cp_cmd = IPFS_BIN "files cp %s %s";
+
+    char* cmd = malloc(strlen(cp_cmd) + strlen(from) + strlen(to));
+    if (!cmd)
+        return -ENOMEM;
     
-    snprintf(full_cmd, cmd_len, cmd, from, to);
-    FILE* proc_out = popen(full_cmd, "r");
-    free(full_cmd);
+    sprintf(cmd, cp_cmd, from, to);
+    FILE* proc_out = popen(cmd, "r");
+    free(cmd);
 
     if (!proc_out)
         return -errno;
@@ -207,7 +254,11 @@ int mfsf_symlink(const char* from, const char* to) {
     if (pclose(proc_out))
         return -errno;
 
-    return publish_name();
+    // TODO: Remove file on failure
+    if (pin_path(to) || publish_name())
+        return -errno;
+
+    return 0;
 }
 
 int mfsf_readlink(const char* path, char* buf, size_t size) {
@@ -218,15 +269,15 @@ int mfsf_readlink(const char* path, char* buf, size_t size) {
 
 int mfsf_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
-    int ret_val = 0;
 
-    const char* cmd = IPFS_BIN "files ls %s";
-    int cmd_len = strlen(cmd) + strlen(path);
-    char* full_cmd = malloc(cmd_len);
-    snprintf(full_cmd, cmd_len, cmd, path);
+    const char* ls_cmd = IPFS_BIN "files ls %s";
+    char* cmd = malloc(strlen(ls_cmd) + strlen(path));
+    if (!cmd)
+        return -ENOMEM;
 
-    FILE* proc_out = popen(full_cmd, "r");
-    free(full_cmd);
+    sprintf(cmd, ls_cmd, path);
+    FILE* proc_out = popen(cmd, "r");
+    free(cmd);
 
     if (!proc_out)
         return -errno;
@@ -238,9 +289,8 @@ int mfsf_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
             break;
     }
 
-    ret_val = ftell(proc_out) == EOF ? 0 : -ENOMEM;
     if (pclose(proc_out))
         return -errno;
 
-    return ret_val;
+    return 0;
 }
