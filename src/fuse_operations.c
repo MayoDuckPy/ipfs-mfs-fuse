@@ -110,6 +110,8 @@ static struct mfsf_stat* parse_ipfs_stat(const char* path) {
         return NULL;
     }
 
+    // Parse output stats
+    // TODO: Improve parsing speed by assuming entry positions
     char buf[BUF_SIZE];
     const char* size_str = "Size: ";
     const char* cumulative_size_str = "CumulativeSize: ";
@@ -131,6 +133,7 @@ static struct mfsf_stat* parse_ipfs_stat(const char* path) {
     }
 
     if (pclose(proc)) {
+        errno = ENOENT;  // IPFS returns 1 (EPERM) if no file/directory
         free(stat);
         return NULL;
     }
@@ -184,17 +187,12 @@ static int publish_name() {
 
 /* Pin a specified path given by the IPFS files API */
 static int pin_path(const char* path) {
-    char* pin_cmd = IPFS_BIN "pin add %s";
-    char* cmd = malloc(strlen(pin_cmd) + CID_MAX);
-
     char* cid = cid_from_path(path);
     if (!cid)
         return -errno;
 
-    sprintf(cmd, pin_cmd, cid);
-    FILE* proc = popen(cmd, "r");
+    FILE* proc = mfsf_cmd_run("pin add", 1, cid);
     free(cid);
-    free(cmd);
 
     if (!proc || pclose(proc))
         return -errno;
@@ -225,6 +223,14 @@ int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi)
     }
 
     free(mfs_stat);
+    return 0;
+}
+
+int mfsf_mkdir(const char* path, mode_t mode) {
+    FILE* proc = mfsf_cmd_run("files mkdir", 1, path);
+    if (!proc || pclose(proc) || publish_name())
+        return -errno;
+
     return 0;
 }
 

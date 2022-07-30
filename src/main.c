@@ -7,7 +7,7 @@ int main(int argc, char** argv) {
     struct fuse_operations mfsf_operations = {
         .getattr  = mfsf_getattr,
         .mknod    = NULL,
-        .mkdir    = NULL,
+        .mkdir    = mfsf_mkdir,
         .open     = NULL,
         .symlink  = mfsf_symlink,
         .read     = NULL,
