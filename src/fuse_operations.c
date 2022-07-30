@@ -8,12 +8,9 @@
 #include <unistd.h>
 
 #include "fuse_operations.h"
+#include "ipfs_operations.h"
 
-#define CID_MAX  60
 #define BUF_SIZE 1024
-#define IPFS_BIN "ipfsp" " "
-
-// TODO: Update published hash when changes occur
 
 static char* name_from_path(const char* path) {
     const char* ch = path;
@@ -99,30 +96,27 @@ struct mfsf_path* mfsf_path_create(const char* path) {
 
 /* Read the attributes of a file from ipfs and return it's details. */
 static struct mfsf_stat* parse_ipfs_stat(const char* path) {
-    const char* stat_cmd = IPFS_BIN "files stat %s";
-    char* cmd = malloc(strlen(stat_cmd) + strlen(path));
+    FILE* proc = mfsf_cmd_run("files stat", 1, path);
+    struct mfsf_stat* stat = calloc(1, sizeof *stat);
+    if (!(proc && stat)) {
+        if (proc)
+            pclose(proc);
 
-    if (!cmd) {
-        errno = ENOMEM;
+        if (stat) {
+            errno = ENOMEM;
+            free(stat);
+        }
+
         return NULL;
     }
 
-    sprintf(cmd, stat_cmd, path);
-    FILE* proc_out = popen(cmd, "r");
-    free(cmd);
-
-    if (!proc_out)
-        return NULL;
-
-    struct mfsf_stat* stat = calloc(1, sizeof *stat);
     char buf[BUF_SIZE];
-
     const char* size_str = "Size: ";
     const char* cumulative_size_str = "CumulativeSize: ";
     const char* children_str = "ChildBlocks: ";
     const char* file_type_str = "Type: ";
     const char* dir_type_str = "directory";
-    while (fgets(buf, sizeof buf, proc_out)) {
+    while (fgets(buf, sizeof buf, proc)) {
         buf[strcspn(buf, "\n")] = '\0';
         if (!strncmp(buf, size_str, strlen(size_str)))
             stat->size = strtol(&buf[strlen(size_str) - 1], NULL, 10);
@@ -136,32 +130,34 @@ static struct mfsf_stat* parse_ipfs_stat(const char* path) {
                     ? MFS_DIRECTORY : MFS_FILE;
     }
 
-    if (pclose(proc_out))
+    if (pclose(proc)) {
+        free(stat);
         return NULL;
+    }
 
     return stat;
 }
 
 static char* cid_from_path(const char* path) {
-    char* stat_cmd = IPFS_BIN "files stat %s";
-
+    FILE* proc = mfsf_cmd_run("files stat", 1, path);
     char* cid = malloc(CID_MAX);
-    char* cmd = malloc(strlen(stat_cmd) + CID_MAX);
-    if (!cid || !cmd) {
-        errno = ENOMEM;
+    if (!(proc && cid)) {
+        if (proc)
+            pclose(proc);
+
+        if (cid) {
+            errno = ENOMEM;
+            free(cid);
+        }
+
         return NULL;
     }
 
-    sprintf(cmd, stat_cmd, path);
-    FILE* proc = popen(cmd, "r");
-    free(cmd);
-
-    if (!proc)
-        return NULL;
-
     fgets(cid, CID_MAX, proc);
-    if (pclose(proc))
+    if (pclose(proc)) {
+        free(cid);
         return NULL;
+    }
 
     return cid;
 }
@@ -209,12 +205,12 @@ static int pin_path(const char* path) {
 int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi) {
     struct mfsf_stat* mfs_stat = parse_ipfs_stat(path);
     if (!mfs_stat)
-        return -ENOENT;
+        return -errno;
 
     struct timespec current_time = { .tv_sec = time(NULL) };
     stat->st_atim  = current_time;
-    stat->st_mtim  = current_time;
-    stat->st_ctim  = current_time;
+    stat->st_mtim  = stat->st_atim;
+    stat->st_ctim  = stat->st_atim;
     stat->st_uid   = getuid();
     stat->st_gid   = getgid();
 
@@ -226,8 +222,6 @@ int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi)
         stat->st_nlink = 1;
         stat->st_size  = mfs_stat->size;
         //stat->st_blocks = mfs_stat->children;
-    } else if (lstat(path, stat)) {
-        return -errno;
     }
 
     free(mfs_stat);
@@ -235,27 +229,9 @@ int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi)
 }
 
 int mfsf_symlink(const char* from, const char* to) {
-    char* cp_cmd = IPFS_BIN "files cp %s %s";
-
-    char* cmd = malloc(strlen(cp_cmd) + strlen(from) + strlen(to));
-    if (!cmd)
-        return -ENOMEM;
-    
-    sprintf(cmd, cp_cmd, from, to);
-    FILE* proc_out = popen(cmd, "r");
-    free(cmd);
-
-    if (!proc_out)
-        return -errno;
-
-    char err_msg[BUF_SIZE];
-    fgets(err_msg, BUF_SIZE, proc_out);
-
-    if (pclose(proc_out))
-        return -errno;
-
     // TODO: Remove file on failure
-    if (pin_path(to) || publish_name())
+    FILE* proc = mfsf_cmd_run("files cp", 2, from, to);
+    if (!proc || pclose(proc) || pin_path(to) || publish_name())
         return -errno;
 
     return 0;
@@ -270,26 +246,18 @@ int mfsf_readlink(const char* path, char* buf, size_t size) {
 int mfsf_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
 
-    const char* ls_cmd = IPFS_BIN "files ls %s";
-    char* cmd = malloc(strlen(ls_cmd) + strlen(path));
-    if (!cmd)
-        return -ENOMEM;
-
-    sprintf(cmd, ls_cmd, path);
-    FILE* proc_out = popen(cmd, "r");
-    free(cmd);
-
-    if (!proc_out)
+    FILE* proc = mfsf_cmd_run("files ls", 1, path);
+    if (!proc)
         return -errno;
 
     char cmd_out[BUF_SIZE];
-    while (fgets(cmd_out, BUF_SIZE, proc_out)) {
+    while (fgets(cmd_out, BUF_SIZE, proc)) {
         cmd_out[strcspn(cmd_out, "\n")] = '\0';
         if (filler(buf, cmd_out, NULL, offset, FUSE_FILL_DIR_PLUS))
             break;
     }
 
-    if (pclose(proc_out))
+    if (pclose(proc))
         return -errno;
 
     return 0;

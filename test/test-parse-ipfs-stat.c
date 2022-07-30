@@ -2,6 +2,7 @@
 #include <stdlib.h>
 
 #include "fuse_operations.c"
+#include "ipfs_operations.c"
 
 #define TEST(x, errno) if ((err = x)) return err
 
