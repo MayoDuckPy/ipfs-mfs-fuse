@@ -1,6 +1,5 @@
 unit_tests = [
-  'test-mfsf-path-create.c',
-  'test-parse-ipfs-stat.c',
+  'test-mfsf-cmd-files-stat.c',
 ]
 
 foreach unit_test : unit_tests

@@ -1,7 +1,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "fuse_operations.c"
 #include "ipfs_operations.c"
 
 #define TEST(x, errno) if ((err = x)) return err
@@ -14,7 +13,7 @@ enum ERROR_STATUS {
 
 static int parse_root_dir() {
     /* We can't guarantee having children so this is all we can do */
-    struct mfsf_stat* stat = parse_ipfs_stat("/");
+    struct mfsf_stat* stat = mfsf_cmd_files_stat("/");
     if (stat->type != MFS_DIRECTORY)
         return PARSE_ROOT_ERR;
 

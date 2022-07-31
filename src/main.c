@@ -14,6 +14,7 @@ int main(int argc, char** argv) {
         .readdir  = mfsf_readdir,
         .readlink = mfsf_readlink,
         .rename   = NULL,
+        .rmdir    = NULL,
         .unlink   = NULL,
         .write    = NULL,
     };
