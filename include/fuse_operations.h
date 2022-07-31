@@ -3,6 +3,8 @@
 #define FUSE_USE_VERSION 32
 #include <fuse3/fuse.h>
 
+void* mfsf_init(struct fuse_conn_info *conn, struct fuse_config *cfg);
+void mfsf_destroy(void *private_data);
 int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi);
 int mfsf_mkdir(const char* path, mode_t mode);
 int mfsf_symlink(const char* from, const char* to);

@@ -26,5 +26,9 @@ int mfsf_cmd_files_mkdir(const char* path);
 struct mfsf_stat* mfsf_cmd_files_stat(const char* path);
 int mfsf_cmd_files_rm(const char* path, bool recursive);
 int mfsf_cmd_pin_add(const char* path);
+int mfsf_cmd_pin_rm(const char* path);
 int mfsf_publish_path(const char* path);
+int mfsf_update_pin();
+void mfsf_update_pin_init();
+void mfsf_update_pin_destroy();
 #endif

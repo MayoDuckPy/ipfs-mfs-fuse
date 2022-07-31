@@ -9,6 +9,10 @@
 
 #define BUF_SIZE 1024
 
+static char* old_cid = NULL;
+
+/* Get the CID of a file in the MFS.
+ * Sets errno on error. */
 static char* cid_from_path(const char* path) {
     FILE* proc = mfsf_cmd_run("files stat", 1, path);
     char* cid = malloc(CID_MAX);
@@ -83,9 +87,8 @@ FILE* mfsf_cmd_run(const char* cmd, int argc, ...) {
 }
 
 int mfsf_cmd_files_cp(const char* from, const char* to) {
-    // TODO: Remove file on failure
     FILE* proc = mfsf_cmd_run("files cp", 2, from, to);
-    if (!proc || pclose(proc) || mfsf_cmd_pin_add(to) || mfsf_publish_path("/"))
+    if (!proc || pclose(proc) || mfsf_update_pin() || mfsf_publish_path("/"))
         return -errno;
 
     return 0;
@@ -93,7 +96,7 @@ int mfsf_cmd_files_cp(const char* from, const char* to) {
 
 int mfsf_cmd_files_mkdir(const char* path) {
     FILE* proc = mfsf_cmd_run("files mkdir", 1, path);
-    if (!proc || pclose(proc) || mfsf_publish_path("/"))
+    if (!proc || pclose(proc) || mfsf_update_pin() || mfsf_publish_path("/"))
         return -errno;
 
     return 0;
@@ -102,13 +105,13 @@ int mfsf_cmd_files_mkdir(const char* path) {
 int mfsf_cmd_files_rm(const char* path, bool recursive) {
     char* cmd = recursive ? "files rm -r" : "files rm";
     FILE* proc = mfsf_cmd_run(cmd, 1, path);
-    if (!proc || pclose(proc) || mfsf_publish_path("/"))  // TODO: Unpin file
+    if (!proc || pclose(proc) || mfsf_update_pin() || mfsf_publish_path("/"))
         return -errno;
 
     return 0;
 }
 
-/* Read the attributes of a file from ipfs and return it's details. */
+/* Read the attributes of a file in the MFS and return it's details. */
 struct mfsf_stat* mfsf_cmd_files_stat(const char* path) {
     FILE* proc = mfsf_cmd_run("files stat", 1, path);
     struct mfsf_stat* stat = calloc(1, sizeof *stat);
@@ -155,13 +158,12 @@ struct mfsf_stat* mfsf_cmd_files_stat(const char* path) {
     return stat;
 }
 
-/* Pin a specified path given by the IPFS files API */
-int mfsf_cmd_pin_add(const char* path) {
+static int handle_pinning(const char* path, const char* pin_cmd) {
     char* cid = cid_from_path(path);
     if (!cid)
         return -errno;
 
-    FILE* proc = mfsf_cmd_run("pin add", 1, cid);
+    FILE* proc = mfsf_cmd_run(pin_cmd, 1, cid);
     free(cid);
 
     if (!proc || pclose(proc))
@@ -170,7 +172,17 @@ int mfsf_cmd_pin_add(const char* path) {
     return 0;
 }
 
-/* Publish the path located in the IPFS files API */
+/* Pin the specified path located in the MFS */
+int mfsf_cmd_pin_add(const char* path) {
+    return handle_pinning(path, "pin add");
+}
+
+/* Unpin the specified path located in the MFS */
+int mfsf_cmd_pin_rm(const char* path) {
+    return handle_pinning(path, "pin rm");
+}
+
+/* Publish the path located in the MFS */
 int mfsf_publish_path(const char* path) {
     char* cid = cid_from_path(path);
     if (!cid)
@@ -183,4 +195,54 @@ int mfsf_publish_path(const char* path) {
         return -errno;
 
     return 0;
+}
+
+void mfsf_update_pin_init() {
+    if (!old_cid)
+        old_cid = cid_from_path("/");
+}
+
+void mfsf_update_pin_destroy() {
+    if (old_cid)
+        free(old_cid);
+}
+
+/* Assuming the root of the MFS is pinned, update it's CID.
+ *
+ * NOTE: You will have to manually update your MFS root pin if you forget to
+ * run `mfsf_update_pin_init()`.
+ */
+int mfsf_update_pin() {
+    if (!old_cid) {
+        errno = EFAULT;
+        goto pin_update_err;
+    }
+
+    char* current_cid = cid_from_path("/");
+    if (!current_cid) {
+        errno = ENOMEM;
+        goto pin_update_err;
+    }
+
+    if (!strcmp(old_cid, current_cid)) {
+        errno = EFAULT;
+        if (old_cid != current_cid)
+            free(current_cid);
+
+        goto pin_update_err;
+    }
+
+    FILE* proc = mfsf_cmd_run("pin update", 2, old_cid, current_cid);
+    if (!proc || pclose(proc)) {
+        free(current_cid);
+        goto pin_update_err;
+    }
+
+    free(old_cid);
+    old_cid = current_cid;
+
+    return 0;
+
+    pin_update_err:
+        return -errno;
 }

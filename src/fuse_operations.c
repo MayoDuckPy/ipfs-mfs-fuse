@@ -12,6 +12,16 @@
 
 #define BUF_SIZE 1024
 
+void* mfsf_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
+    // TODO: Return a struct containing user-defined options.
+    mfsf_update_pin_init();
+    return NULL;
+}
+
+void mfsf_destroy(void *private_data) {
+    mfsf_update_pin_destroy();
+}
+
 int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi) {
     struct mfsf_stat* mfs_stat = mfsf_cmd_files_stat(path);
     if (!mfs_stat)
