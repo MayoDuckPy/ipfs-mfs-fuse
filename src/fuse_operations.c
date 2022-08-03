@@ -65,18 +65,18 @@ int mfsf_readlink(const char* path, char* buf, size_t size) {
 int mfsf_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
         off_t offset, struct fuse_file_info* fi, enum fuse_readdir_flags flags) {
 
-    FILE* proc = mfsf_cmd_run("files ls", 1, path);
-    if (!proc)
+    union mfsf_result result = mfsf_cmd_run(true, "files ls", 1, path);
+    if (!result.stream)
         return -errno;
 
     char cmd_out[BUF_SIZE];
-    while (fgets(cmd_out, BUF_SIZE, proc)) {
+    while (fgets(cmd_out, BUF_SIZE, result.stream)) {
         cmd_out[strcspn(cmd_out, "\n")] = '\0';
         if (filler(buf, cmd_out, NULL, offset, FUSE_FILL_DIR_PLUS))
             break;
     }
 
-    if (pclose(proc))
+    if (pclose(result.stream))
         return -errno;
 
     return 0;

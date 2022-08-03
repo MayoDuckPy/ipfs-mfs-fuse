@@ -6,6 +6,11 @@
 #define IPFS_BIN "ipfsp" " "
 #define CID_MAX  60
 
+union mfsf_result {
+    FILE* stream;
+    int   result;
+};
+
 enum mfs_type {
     MFS_DIRECTORY,
     MFS_FILE
@@ -20,7 +25,7 @@ struct mfsf_stat {
 };
 
 
-FILE* mfsf_cmd_run(const char* cmd, int argc, ...);
+union mfsf_result mfsf_cmd_run(bool should_pipe, const char* cmd, int argc, ...);
 int mfsf_cmd_files_cp(const char* from, const char* to);
 int mfsf_cmd_files_mkdir(const char* path);
 struct mfsf_stat* mfsf_cmd_files_stat(const char* path);
