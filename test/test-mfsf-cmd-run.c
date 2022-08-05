@@ -12,7 +12,7 @@ enum ERROR_STATUS {
 };
 
 static int run_ls() {
-    union mfsf_result result = mfsf_cmd_run(false, "files ls", 1, "/");
+    union mfsf_result result = mfsf_cmd_run(NULL, "files ls %s", 1, "/");
     return result.result ? RUN_LS_ERR : NO_ERR;
 }
 

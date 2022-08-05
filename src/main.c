@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
         .rename   = NULL,
         .rmdir    = mfsf_rmdir,
         .unlink   = mfsf_unlink,
-        .write    = NULL,
+        .write    = mfsf_write,
     };
 
     fuse_main(argc, argv, &mfsf_operations, NULL);

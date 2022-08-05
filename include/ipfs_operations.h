@@ -25,7 +25,7 @@ struct mfsf_stat {
 };
 
 
-union mfsf_result mfsf_cmd_run(bool should_pipe, const char* cmd, int argc, ...);
+union mfsf_result mfsf_cmd_run(const char* pipe_type, const char* cmd, int argc, ...);
 int mfsf_cmd_files_cp(const char* from, const char* to);
 int mfsf_cmd_files_mkdir(const char* path);
 struct mfsf_stat* mfsf_cmd_files_stat(const char* path);

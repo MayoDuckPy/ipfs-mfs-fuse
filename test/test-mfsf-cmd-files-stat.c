@@ -14,7 +14,7 @@ enum ERROR_STATUS {
 static int parse_root_dir() {
     /* We can't guarantee having children so this is all we can do */
     struct mfsf_stat* stat = mfsf_cmd_files_stat("/");
-    if (stat->type != MFS_DIRECTORY)
+    if (!stat || stat->type != MFS_DIRECTORY)
         return PARSE_ROOT_ERR;
 
     return NO_ERR;
