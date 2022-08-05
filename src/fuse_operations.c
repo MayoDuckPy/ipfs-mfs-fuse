@@ -57,7 +57,25 @@ int mfsf_symlink(const char* from, const char* to) {
 }
 
 int mfsf_read(const char* path, char* buf, size_t size, off_t offset, struct fuse_file_info* fi) {
-    return 0;
+    char size_str[sizeof size + 1];
+    char offset_str[sizeof offset + 1];
+
+    // NOTE: IPFS handles size and offset for us.
+    sprintf(size_str, "%lu", size);
+    sprintf(offset_str, "%ld", offset);
+    union mfsf_result result = mfsf_cmd_run(
+            "r", "files read -o %s -n %s \"%s\"", 3,
+            offset_str, size_str, path);
+
+    if (!result.stream)
+        return -errno;
+
+    int fd = fileno(result.stream);
+    int bytes_read = read(fd, buf, size);
+    if (pclose(result.stream))
+        return -errno;
+
+    return bytes_read;
 }
 
 int mfsf_write(const char* path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi) {

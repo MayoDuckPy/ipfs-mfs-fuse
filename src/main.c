@@ -12,7 +12,7 @@ int main(int argc, char** argv) {
         .mkdir    = mfsf_mkdir,
         .open     = NULL,
         .symlink  = mfsf_symlink,
-        .read     = NULL,
+        .read     = mfsf_read,
         .readdir  = mfsf_readdir,
         .readlink = mfsf_readlink,
         .rename   = NULL,
