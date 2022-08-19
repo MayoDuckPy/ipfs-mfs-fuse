@@ -1,9 +1,9 @@
 #ifndef MFS_IPFS_OP_H
+#define MFS_IPFS_OP_H
+
 #include <stdbool.h>
 #include <stdio.h>
 
-#define MFS_IPFS_OP_H
-#define IPFS_BIN "ipfsp" " "
 #define CID_MAX  60
 
 union mfsf_result {
@@ -25,7 +25,7 @@ struct mfsf_stat {
 };
 
 
-union mfsf_result mfsf_cmd_run(const char* pipe_type, const char* cmd, int argc, ...);
+union mfsf_result mfsf_cmd_run(const char* cmd, int argc, const char* pipe_type, ...);
 int mfsf_cmd_files_cp(const char* from, const char* to);
 int mfsf_cmd_files_mkdir(const char* path);
 struct mfsf_stat* mfsf_cmd_files_stat(const char* path);

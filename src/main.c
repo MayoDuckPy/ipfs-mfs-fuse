@@ -1,9 +1,10 @@
+#include <errno.h>
 #include <stdio.h>
 
+#include "config.h"
 #include "fuse_operations.h"
 
 int main(int argc, char** argv) {
-    // TODO: Add option to specify IPFS command and store in FUSE context
     struct fuse_operations mfsf_operations = {
         .init     = mfsf_init,
         .destroy  = mfsf_destroy,
@@ -21,5 +22,13 @@ int main(int argc, char** argv) {
         .write    = mfsf_write,
     };
 
-    fuse_main(argc, argv, &mfsf_operations, NULL);
+    //mfsf_config_init();
+    struct mfsf_config* config = mfsf_get_config();
+    if (!config)
+        return -ENOMEM;
+
+    struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+
+    fuse_opt_parse(&args, config, mfsf_get_options(), NULL);
+    return fuse_main(args.argc, args.argv, &mfsf_operations, config);
 }

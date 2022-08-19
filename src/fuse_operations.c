@@ -7,19 +7,23 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "config.h"
 #include "fuse_operations.h"
 #include "ipfs_operations.h"
 
 #define BUF_SIZE 1024
 
-void* mfsf_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
-    // TODO: Return a struct containing user-defined options.
+void* mfsf_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
+    mfsf_set_config_defaults();
     mfsf_update_pin_init();
-    return NULL;
+
+    struct fuse_context* context = fuse_get_context();
+    return context->private_data;
 }
 
-void mfsf_destroy(void *private_data) {
+void mfsf_destroy(void* private_data) {
     mfsf_update_pin_destroy();
+    //mfsf_config_destroy(private_data);
 }
 
 int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi) {
@@ -64,7 +68,7 @@ int mfsf_read(const char* path, char* buf, size_t size, off_t offset, struct fus
     sprintf(size_str, "%lu", size);
     sprintf(offset_str, "%ld", offset);
     union mfsf_result result = mfsf_cmd_run(
-            "r", "files read -o %s -n %s \"%s\"", 3,
+            "files read -o %s -n %s \"%s\"", 3, "r",
             offset_str, size_str, path);
 
     if (!result.stream)
@@ -87,7 +91,7 @@ int mfsf_write(const char* path, const char* buf, size_t size, off_t offset, str
     sprintf(size_str, "%lu", size);
     sprintf(offset_str, "%ld", offset);
     union mfsf_result result = mfsf_cmd_run(
-            "w", "files write --cid-ver %s -e -t -o %s -n %s \"%s\"", 4,
+            "files write --cid-ver %s -e -t -o %s -n %s \"%s\"", 4, "w",
             cid_ver, offset_str, size_str, path);
 
     if (!result.stream)
@@ -110,7 +114,7 @@ int mfsf_readlink(const char* path, char* buf, size_t size) {
 int mfsf_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
         off_t offset, struct fuse_file_info* fi, enum fuse_readdir_flags flags) {
 
-    union mfsf_result result = mfsf_cmd_run("r", "files ls \"%s\"", 1, path);
+    union mfsf_result result = mfsf_cmd_run("files ls \"%s\"", 1, "r", path);
     if (!result.stream)
         return -errno;
 

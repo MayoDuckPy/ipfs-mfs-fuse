@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "config.h"
 #include "ipfs_operations.h"
 
 #define BUF_SIZE 1024
@@ -14,7 +15,7 @@ static char* old_cid = NULL;
 /* Get the CID of a file in the MFS.
  * Sets errno on error. */
 static char* cid_from_path(const char* path) {
-    union mfsf_result result = mfsf_cmd_run("r", "files stat \"%s\"", 1, path);
+    union mfsf_result result = mfsf_cmd_run("files stat \"%s\"", 1, "r", path);
     char* cid = malloc(CID_MAX);
     if (!(result.stream && cid)) {
         if (result.stream)
@@ -44,26 +45,29 @@ static char* cid_from_path(const char* path) {
  * @param cmd A printf-like format string of the command to be passed to IPFS.
  * @param argc The number of arguments.
  */
-union mfsf_result mfsf_cmd_run(const char* pipe_type, const char* cmd, int argc, ...) {
+union mfsf_result mfsf_cmd_run(const char* cmd, int argc, const char* pipe_type, ...) {
     union mfsf_result result = {0};
     va_list va_args;
     int args_len = 0;
 
-    va_start(va_args, argc);
+    va_start(va_args, pipe_type);
     for (int i = 0; i < argc; i++)
         args_len += strlen(va_arg(va_args, char*));
     va_end(va_args);
 
-    char* cmd_str = malloc(strlen(IPFS_BIN) + strlen(cmd) + args_len);
+    struct mfsf_config* config = mfsf_get_config();
+    int bin_len = strlen(config->ipfs_bin);
+    char* cmd_str = malloc(bin_len + strlen(cmd) + args_len);
     if (!cmd_str) {
         errno = ENOMEM;
         return result;
     }
 
     // Create command string
-    va_start(va_args, argc);
-    strcpy(cmd_str, IPFS_BIN);
-    vsprintf(&cmd_str[strlen(IPFS_BIN)], cmd, va_args);
+    va_start(va_args, pipe_type);
+    strcpy(cmd_str, config->ipfs_bin);
+    cmd_str[bin_len] = ' ';
+    vsprintf(&cmd_str[bin_len + 1], cmd, va_args);
     va_end(va_args);
 
     // Run command
@@ -77,7 +81,7 @@ union mfsf_result mfsf_cmd_run(const char* pipe_type, const char* cmd, int argc,
 }
 
 int mfsf_cmd_files_cp(const char* from, const char* to) {
-    union mfsf_result result = mfsf_cmd_run(NULL, "files cp \"%s\" \"%s\"", 2, from, to);
+    union mfsf_result result = mfsf_cmd_run("files cp \"%s\" \"%s\"", 2, NULL, from, to);
     if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
         return -errno;
 
@@ -85,7 +89,7 @@ int mfsf_cmd_files_cp(const char* from, const char* to) {
 }
 
 int mfsf_cmd_files_mkdir(const char* path) {
-    union mfsf_result result = mfsf_cmd_run(NULL, "files mkdir \"%s\"", 1, path);
+    union mfsf_result result = mfsf_cmd_run("files mkdir \"%s\"", 1, NULL, path);
     if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
         return -errno;
 
@@ -94,7 +98,7 @@ int mfsf_cmd_files_mkdir(const char* path) {
 
 int mfsf_cmd_files_rm(const char* path, bool recursive) {
     char* cmd = recursive ? "files rm -r \"%s\"" : "files rm \"%s\"";
-    union mfsf_result result = mfsf_cmd_run(NULL, cmd, 1, path);
+    union mfsf_result result = mfsf_cmd_run(cmd, 1, NULL, path);
     if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
         return -errno;
 
@@ -103,7 +107,7 @@ int mfsf_cmd_files_rm(const char* path, bool recursive) {
 
 /* Read the attributes of a file in the MFS and return it's details. */
 struct mfsf_stat* mfsf_cmd_files_stat(const char* path) {
-    union mfsf_result result = mfsf_cmd_run("r", "files stat \"%s\"", 1, path);
+    union mfsf_result result = mfsf_cmd_run("files stat \"%s\"", 1, "r", path);
     struct mfsf_stat* stat = calloc(1, sizeof *stat);
     if (!(result.stream && stat)) {
         if (result.stream)
@@ -153,7 +157,7 @@ static int handle_pinning(const char* path, const char* pin_cmd) {
     if (!cid)
         return -errno;
 
-    union mfsf_result result = mfsf_cmd_run(NULL, pin_cmd, 1, cid);
+    union mfsf_result result = mfsf_cmd_run(pin_cmd, 1, NULL, cid);
     free(cid);
 
     if (result.result)
@@ -178,7 +182,7 @@ int mfsf_publish_path(const char* path) {
     if (!cid)
         return -errno;
 
-    union mfsf_result result = mfsf_cmd_run(NULL, "name publish --allow-offline %s", 1, cid);
+    union mfsf_result result = mfsf_cmd_run("name publish --allow-offline %s", 1, NULL, cid);
     free(cid);
 
     if (result.result)
@@ -222,7 +226,7 @@ int mfsf_update_pin() {
         goto pin_update_err;
     }
 
-    union mfsf_result result = mfsf_cmd_run(NULL, "pin update %s %s", 2, old_cid, current_cid);
+    union mfsf_result result = mfsf_cmd_run("pin update %s %s", 2, NULL, old_cid, current_cid);
     if (result.result) {
         free(current_cid);
         goto pin_update_err;
