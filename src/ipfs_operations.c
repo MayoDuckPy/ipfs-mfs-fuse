@@ -56,27 +56,36 @@ union mfsf_result mfsf_cmd_run(const char* cmd, int argc, const char* pipe_type,
     va_end(va_args);
 
     struct mfsf_config* config = mfsf_get_config();
-    int bin_len = strlen(config->ipfs_bin);
-    char* cmd_str = malloc(bin_len + strlen(cmd) + args_len);
-    if (!cmd_str) {
+    char* ipfs_fmt_str = "IPFS_PATH=\"%s\" \"%s\" ";
+    char* ipfs_str = malloc(strlen(ipfs_fmt_str)
+            + strlen(config->ipfs_path) + strlen(config->ipfs_bin));
+
+    if (!ipfs_str) {
+        errno = ENOMEM;
+        return result;
+    }
+
+    sprintf(ipfs_str, ipfs_fmt_str, config->ipfs_path, config->ipfs_bin);
+    char* exec_str = malloc(strlen(ipfs_str) + strlen(cmd) + args_len + 3);
+    if (!exec_str) {
         errno = ENOMEM;
         return result;
     }
 
     // Create command string
     va_start(va_args, pipe_type);
-    strcpy(cmd_str, config->ipfs_bin);
-    cmd_str[bin_len] = ' ';
-    vsprintf(&cmd_str[bin_len + 1], cmd, va_args);
+    strcpy(exec_str, ipfs_str);
+    vsprintf(&exec_str[strlen(ipfs_str)], cmd, va_args);
     va_end(va_args);
 
     // Run command
     if (pipe_type)
-        result.stream = popen(cmd_str, pipe_type);
+        result.stream = popen(exec_str, pipe_type);
     else
-        result.result = system(cmd_str);
+        result.result = system(exec_str);
 
-    free(cmd_str);
+    free(ipfs_str);
+    free(exec_str);
     return result;
 }
 
@@ -89,7 +98,11 @@ int mfsf_cmd_files_cp(const char* from, const char* to) {
 }
 
 int mfsf_cmd_files_mkdir(const char* path) {
-    union mfsf_result result = mfsf_cmd_run("files mkdir \"%s\"", 1, NULL, path);
+    char cid_ver[sizeof(int)];
+    struct mfsf_config* config = mfsf_get_config();
+    sprintf(cid_ver, "%d", config->cid_ver);
+
+    union mfsf_result result = mfsf_cmd_run("files mkdir --cid-ver %s \"%s\"", 1, NULL, cid_ver, path);
     if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
         return -errno;
 

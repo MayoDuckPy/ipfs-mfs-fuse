@@ -14,6 +14,8 @@ static struct mfsf_config mfsf_config = {0};
 
 static struct fuse_opt options[] = {
     mfsf_option("ipfs-bin=%s", ipfs_bin, 0),
+    mfsf_option("ipfs-path=%s", ipfs_path, 0),
+    mfsf_option("cid-ver=%d", cid_ver, 0),
     FUSE_OPT_END
 };
 
@@ -29,4 +31,10 @@ struct fuse_opt* mfsf_get_options() {
 void mfsf_set_config_defaults() {
     if (!mfsf_config.ipfs_bin)
         mfsf_config.ipfs_bin = "ipfs";
+
+    if (!mfsf_config.ipfs_path)
+        mfsf_config.ipfs_path = "~/.ipfs";
+
+    if (!mfsf_config.cid_ver)
+        mfsf_config.cid_ver = 0;
 }
