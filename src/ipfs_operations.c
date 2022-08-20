@@ -102,7 +102,15 @@ int mfsf_cmd_files_mkdir(const char* path) {
     struct mfsf_config* config = mfsf_get_config();
     sprintf(cid_ver, "%d", config->cid_ver);
 
-    union mfsf_result result = mfsf_cmd_run("files mkdir --cid-ver %s \"%s\"", 1, NULL, cid_ver, path);
+    union mfsf_result result = mfsf_cmd_run("files mkdir --cid-ver %s \"%s\"", 2, NULL, cid_ver, path);
+    if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
+        return -errno;
+
+    return 0;
+}
+
+int mfsf_cmd_files_rename(const char* src, const char* dst) {
+    union mfsf_result result = mfsf_cmd_run("files mv \"%s\" \"%s\"", 2, NULL, src, dst);
     if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
         return -errno;
 

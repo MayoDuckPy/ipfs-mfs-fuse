@@ -13,6 +13,7 @@ int mfsf_write(const char* path, const char* buf, size_t size, off_t offset, str
 int mfsf_readlink(const char* path, char* buf, size_t size);
 int mfsf_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags);
+int mfsf_rename(const char* src, const char* dst, unsigned int flags);
 int mfsf_rmdir(const char* path);
 int mfsf_unlink(const char* path);
 #endif

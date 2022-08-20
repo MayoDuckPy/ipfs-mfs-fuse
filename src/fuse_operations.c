@@ -131,6 +131,19 @@ int mfsf_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
     return 0;
 }
 
+int mfsf_rename(const char* src, const char* dst, unsigned int flags) {
+    /* TODO: Find where flags are defined
+    switch(flags) {
+        case RENAME_EXCHANGE:
+            return -1;
+        case RENAME_NOREPLACE:
+            return -1;
+    }
+    */
+
+    return mfsf_cmd_files_rename(src, dst);
+}
+
 int mfsf_unlink(const char* path) {
     return mfsf_cmd_files_rm(path, false);
 }

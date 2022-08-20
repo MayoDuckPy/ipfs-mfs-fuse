@@ -2,8 +2,6 @@
 #define MFSF_CONFIG_H
 /* Configuration TODOs:
  *
- * IPFS_PATH
- * CID version
  * Toggle HTTP API usage
  * HTTP API address
  */

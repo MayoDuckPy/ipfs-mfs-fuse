@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
         .read     = mfsf_read,
         .readdir  = mfsf_readdir,
         .readlink = mfsf_readlink,
-        .rename   = NULL,
+        .rename   = mfsf_rename,
         .rmdir    = mfsf_rmdir,
         .unlink   = mfsf_unlink,
         .write    = mfsf_write,
