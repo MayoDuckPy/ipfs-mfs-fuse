@@ -15,14 +15,12 @@
 
 void* mfsf_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
     mfsf_set_config_defaults();
-    mfsf_update_pin_init();
 
     struct fuse_context* context = fuse_get_context();
     return context->private_data;
 }
 
 void mfsf_destroy(void* private_data) {
-    mfsf_update_pin_destroy();
     //mfsf_config_destroy(private_data);
 }
 
@@ -99,7 +97,7 @@ int mfsf_write(const char* path, const char* buf, size_t size, off_t offset, str
 
     int fd = fileno(result.stream);
     int bytes_written = write(fd, buf, size);
-    if (pclose(result.stream) || mfsf_update_pin() || mfsf_publish_path("/"))
+    if (pclose(result.stream))
         return -errno;
 
     return bytes_written;

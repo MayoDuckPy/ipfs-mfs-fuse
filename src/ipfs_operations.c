@@ -10,8 +10,6 @@
 
 #define BUF_SIZE 1024
 
-static char* old_cid = NULL;
-
 /* Get the CID of a file in the MFS.
  * Sets errno on error. */
 static char* cid_from_path(const char* path) {
@@ -91,7 +89,7 @@ union mfsf_result mfsf_cmd_run(const char* cmd, int argc, const char* pipe_type,
 
 int mfsf_cmd_files_cp(const char* from, const char* to) {
     union mfsf_result result = mfsf_cmd_run("files cp \"%s\" \"%s\"", 2, NULL, from, to);
-    if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
+    if (result.result)
         return -errno;
 
     return 0;
@@ -103,7 +101,7 @@ int mfsf_cmd_files_mkdir(const char* path) {
     sprintf(cid_ver, "%d", config->cid_ver);
 
     union mfsf_result result = mfsf_cmd_run("files mkdir --cid-ver %s \"%s\"", 2, NULL, cid_ver, path);
-    if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
+    if (result.result)
         return -errno;
 
     return 0;
@@ -111,7 +109,7 @@ int mfsf_cmd_files_mkdir(const char* path) {
 
 int mfsf_cmd_files_rename(const char* src, const char* dst) {
     union mfsf_result result = mfsf_cmd_run("files mv \"%s\" \"%s\"", 2, NULL, src, dst);
-    if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
+    if (result.result)
         return -errno;
 
     return 0;
@@ -120,7 +118,7 @@ int mfsf_cmd_files_rename(const char* src, const char* dst) {
 int mfsf_cmd_files_rm(const char* path, bool recursive) {
     char* cmd = recursive ? "files rm -r \"%s\"" : "files rm \"%s\"";
     union mfsf_result result = mfsf_cmd_run(cmd, 1, NULL, path);
-    if (result.result || mfsf_update_pin() || mfsf_publish_path("/"))
+    if (result.result)
         return -errno;
 
     return 0;
@@ -210,54 +208,4 @@ int mfsf_publish_path(const char* path) {
         return -errno;
 
     return 0;
-}
-
-void mfsf_update_pin_init() {
-    if (!old_cid)
-        old_cid = cid_from_path("/");
-}
-
-void mfsf_update_pin_destroy() {
-    if (old_cid)
-        free(old_cid);
-}
-
-/* Assuming the root of the MFS is pinned, update it's CID.
- *
- * NOTE: You will have to manually update your MFS root pin if you forget to
- * run `mfsf_update_pin_init()`.
- */
-int mfsf_update_pin() {
-    if (!old_cid) {
-        errno = EFAULT;
-        goto pin_update_err;
-    }
-
-    char* current_cid = cid_from_path("/");
-    if (!current_cid) {
-        errno = ENOMEM;
-        goto pin_update_err;
-    }
-
-    if (!strcmp(old_cid, current_cid)) {
-        errno = EFAULT;
-        if (old_cid != current_cid)
-            free(current_cid);
-
-        goto pin_update_err;
-    }
-
-    union mfsf_result result = mfsf_cmd_run("pin update %s %s", 2, NULL, old_cid, current_cid);
-    if (result.result) {
-        free(current_cid);
-        goto pin_update_err;
-    }
-
-    free(old_cid);
-    old_cid = current_cid;
-
-    return 0;
-
-    pin_update_err:
-        return -errno;
 }
