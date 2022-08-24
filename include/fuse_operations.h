@@ -2,6 +2,14 @@
 #define MFSF_OPERATIONS_H
 #define FUSE_USE_VERSION 32
 #include <fuse3/fuse.h>
+#include <stdbool.h>
+
+#include "config.h"
+
+struct mfsf_context {
+    struct mfsf_config* config;
+    bool handle_symlink;
+};
 
 void* mfsf_init(struct fuse_conn_info *conn, struct fuse_config *cfg);
 void mfsf_destroy(void *private_data);

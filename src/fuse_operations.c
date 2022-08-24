@@ -7,7 +7,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "config.h"
 #include "fuse_operations.h"
 #include "ipfs_operations.h"
 
@@ -15,9 +14,7 @@
 
 void* mfsf_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
     mfsf_set_config_defaults();
-
-    struct fuse_context* context = fuse_get_context();
-    return context->private_data;
+    return fuse_get_context()->private_data;
 }
 
 void mfsf_destroy(void* private_data) {
@@ -36,7 +33,17 @@ int mfsf_getattr(const char* path, struct stat* stat, struct fuse_file_info* fi)
     stat->st_uid   = getuid();
     stat->st_gid   = getgid();
 
-    if (mfs_stat->type == MFS_DIRECTORY) {
+    struct mfsf_context* context = fuse_get_context()->private_data;
+    if (context->handle_symlink) {
+        /* Symlink will independently verify that a link was successfully
+         * created otherwise it will return an error. Therefore, we must first
+         * report our file as a symlink even though they will be seen as
+         * files/directories when `readdir()` is run.
+         */
+        stat->st_mode = S_IFLNK | 0644;
+        stat->st_nlink = 1;
+        context->handle_symlink = false;
+    } else if (mfs_stat->type == MFS_DIRECTORY) {
         stat->st_mode = S_IFDIR | 0755;
         stat->st_nlink = mfs_stat->children + 2;
     } else if (mfs_stat->type == MFS_FILE) {
@@ -55,6 +62,9 @@ int mfsf_mkdir(const char* path, mode_t mode) {
 }
 
 int mfsf_symlink(const char* from, const char* to) {
+    struct mfsf_context* context = fuse_get_context()->private_data;
+    context->handle_symlink = true;
+
     return mfsf_cmd_files_cp(from, to);
 }
 
@@ -105,7 +115,7 @@ int mfsf_write(const char* path, const char* buf, size_t size, off_t offset, str
 
 int mfsf_readlink(const char* path, char* buf, size_t size) {
     strncpy(buf, path, size);
-    buf[strlen(path) + 1] = '\0';
+    buf[size] = '\0';
     return 0;
 }
 

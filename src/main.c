@@ -22,13 +22,16 @@ int main(int argc, char** argv) {
         .write    = mfsf_write,
     };
 
-    //mfsf_config_init();
-    struct mfsf_config* config = mfsf_get_config();
-    if (!config)
+    struct mfsf_context context = {
+        .config = mfsf_get_config(),
+        .handle_symlink = false
+    };
+
+    if (!context.config)
         return -ENOMEM;
 
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
-    fuse_opt_parse(&args, config, mfsf_get_options(), NULL);
-    return fuse_main(args.argc, args.argv, &mfsf_operations, config);
+    fuse_opt_parse(&args, context.config, mfsf_get_options(), NULL);
+    return fuse_main(args.argc, args.argv, &mfsf_operations, &context);
 }
