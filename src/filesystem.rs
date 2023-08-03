@@ -3,9 +3,9 @@ use fuser::{
     ReplyEntry, ReplyWrite, Request, TimeOrNow,
 };
 // use ipfs_api_backend_hyper::IpfsClient;
-use libc::{EIO, ENOENT, ENOSYS};
+use libc::{EEXIST, EIO, ENOENT, ENOSYS};
 use log::{error, info};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::os::raw::c_int;
 use std::time::{Duration, SystemTime};
@@ -18,7 +18,7 @@ const FUSE_CAP_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
 struct IpfsInode {
     name: String,
     parent: Option<u64>,
-    children: Option<Vec<u64>>, // TODO: Use HashMap<String, u64>
+    children: BTreeMap<String, u64>,
 }
 
 pub struct IpfsMFS {
@@ -29,11 +29,12 @@ pub struct IpfsMFS {
 
 // Short TTL required as actual data is handled by IPFS and not the kernel.
 // A long TTL will delay content from updating.
-const TTL_0: Duration = Duration::new(0, 50); // 0 second
+const TTL: Duration = Duration::new(0, 50); // 0 second
 
 // TODO: Print errors as they occur instead of returning them (otherwise create error enums)
 impl IpfsMFS {
     pub fn new() -> IpfsMFS {
+        // TODO: Initialize all directories
         IpfsMFS {
             ipfs_uri: String::from("http://127.0.0.1:5001"),
             // NOTE: Keep or create during operations because mutli-threading?
@@ -43,7 +44,7 @@ impl IpfsMFS {
                 IpfsInode {
                     parent: None,
                     name: String::from(""),
-                    children: None,
+                    children: BTreeMap::new(),
                 },
             )])),
         }
@@ -66,40 +67,27 @@ impl IpfsMFS {
     /// Writes a path to a new inode and return the inode in a Result. Otherwise,
     /// returns an error string.
     fn write_inode(&mut self, parent: u64, name: &str) -> Result<u64, String> {
-        // Check if parent contains child with the same name.
-        // We can assume parent node exists during normal operation.
-        let parent_node = self.inodes.get(&parent).unwrap();
-        if parent_node.children != None {
-            for child in parent_node.children.as_ref().unwrap() {
-                if name == self.inodes.get(&child).unwrap().name {
-                    return Err(String::from("Inode already exists"));
-                }
-            }
-        }
-
         let ino = (self.inodes.len() + 1) as u64;
-        {
-            // Add child to parent
-            let parent_node = self.get_mut_inode(&parent).expect("Parent should exist");
-            match parent_node.children.as_mut() {
-                None => parent_node.children = Some(Vec::from([ino])),
-                Some(children) => children.push(ino),
-            }
-        }
+        let parent_node = self.get_mut_inode(&parent).expect("Parent exists");
+
+        // Add child to parent
+        match parent_node.children.contains_key(name) {
+            true => return Err(String::from("Inode already exists")),
+            false => parent_node.children.insert(name.to_string(), ino),
+        };
 
         self.inodes.insert(
             ino,
             IpfsInode {
                 parent: Some(parent),
                 name: name.to_string(),
-                children: None, // Unknown until traversed
+                children: BTreeMap::new(), // Unknown until traversed
             },
         );
 
         Ok(ino)
     }
 
-    // TODO: Refactor
     fn remove_inode(&mut self, inode: &u64) -> Result<(), String> {
         let mut node = match self.inodes.remove(&inode) {
             Some(node) => node,
@@ -111,30 +99,17 @@ impl IpfsMFS {
             None => {}
             Some(parent) => {
                 let parent = self.get_mut_inode(&parent).expect("Parent should exist");
-                match parent.children.as_mut() {
-                    None => {}
-                    Some(children) => {
-                        for (i, child) in children.iter().enumerate() {
-                            if inode == child {
-                                children.remove(i);
-                                break;
-                            }
-                        }
-                    }
-                }
+                parent.children.remove(&node.name);
             }
         }
 
         // Orphan node's children
         // TODO: Recursively remove inodes
-        match node.children.as_mut() {
-            None => {}
-            Some(children) => {
-                for child in children.iter_mut() {
-                    match self.get_mut_inode(&child) {
-                        None => return Err(String::from("Orphaned inode does not exist")),
-                        Some(child) => child.parent = None,
-                    }
+        if node.children.is_empty() != true {
+            for (_, ino) in node.children.iter_mut() {
+                match self.get_mut_inode(&ino) {
+                    None => return Err(String::from("Orphaned inode does not exist")),
+                    Some(child) => child.parent = None,
                 }
             }
         };
@@ -241,30 +216,17 @@ impl Filesystem for IpfsMFS {
             }
         };
 
-        // Get inode of file
-        let mut ino: u64 = 1;
-        let parent_node = self.get_inode(&parent).expect("Parent should exist");
-        if parent_node.children == None {
-            reply.error(ENOENT);
-            return;
-        }
-
         // Get inode from parent
-        for child in parent_node.children.as_ref().unwrap() {
-            let child_name = match self.get_inode(&child) {
-                None => {
-                    error!("lookup: Child did not exist in parent dir");
-                    reply.error(ENOENT);
-                    return;
-                }
-                Some(child) => &child.name,
-            };
-
-            if name == child_name {
-                ino = child.clone();
-                break;
+        let ino = match self
+            .get_inode(&parent)
+            .and_then(|parent| parent.children.get(name))
+        {
+            None => {
+                reply.error(ENOENT);
+                return;
             }
-        }
+            Some(ino) => ino.clone(),
+        };
 
         let attr = FileAttr {
             ino,
@@ -284,7 +246,7 @@ impl Filesystem for IpfsMFS {
             blksize: 512,
         };
 
-        reply.entry(&TTL_0, &attr, 0);
+        reply.entry(&TTL, &attr, 0);
     }
 
     fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
@@ -349,7 +311,7 @@ impl Filesystem for IpfsMFS {
             blksize: 512,
         };
 
-        reply.attr(&TTL_0, &attr);
+        reply.attr(&TTL, &attr);
     }
 
     fn mkdir(
@@ -423,7 +385,7 @@ impl Filesystem for IpfsMFS {
             blksize: 512,
         };
 
-        reply.entry(&TTL_0, &attr, 0);
+        reply.entry(&TTL, &attr, 0);
     }
 
     fn mknod(
@@ -485,7 +447,7 @@ impl Filesystem for IpfsMFS {
             blksize: 512,
         };
 
-        reply.entry(&TTL_0, &attr, ino)
+        reply.entry(&TTL, &attr, ino)
     }
 
     // fn opendir(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
@@ -630,27 +592,15 @@ impl Filesystem for IpfsMFS {
         };
 
         // Fetch inode so it can be modified
-        let mut ino = None;
+        let ino = match self
+            .get_inode(&parent)
+            .and_then(|parent| parent.children.get(name))
         {
-            let parent_node = self
-                .get_inode(&parent)
-                .expect("rename: Parent should exist");
-            for child in parent_node.children.as_deref().unwrap() {
-                let child_ino = self.get_inode(&child).expect("Child should exist");
-                if name == child_ino.name {
-                    ino = Some(*child);
-                    break;
-                }
-            }
-        }
-
-        let ino = match ino {
             None => {
-                error!("Failed to fetch inode");
                 reply.error(ENOENT);
                 return;
             }
-            Some(ino) => ino,
+            Some(ino) => ino.clone(),
         };
 
         match self.inodes.get_many_mut([&parent, &newparent]) {
@@ -667,22 +617,17 @@ impl Filesystem for IpfsMFS {
 
                 // Detach inode from previous parent
                 // let prev_parent = self.get_mut_inode(&parent).expect("Parent should exist");
-                match prev_parent.children.as_mut() {
-                    None => {
-                        reply.error(ENOENT);
-                        return;
-                    }
-                    Some(children) => {
-                        children.retain(|&e| e != ino);
-                    }
-                }
+                prev_parent.children.remove(name);
 
                 // Add inode to new parent
                 // let new_parent = self.get_mut_inode(&newparent).expect("Parent should exist");
-                match new_parent.children.as_mut() {
-                    None => new_parent.children = Some(Vec::from([ino])),
-                    Some(children) => children.push(ino),
+                if new_parent.children.contains_key(newname) {
+                    error!("Path '{}' already exists", dest);
+                    reply.error(EEXIST);
+                    return;
                 }
+
+                new_parent.children.insert(name.to_string(), ino);
             }
         }
 
@@ -732,32 +677,25 @@ impl Filesystem for IpfsMFS {
         }
 
         // Fetch inode so it can be deallocated
-        let mut ino = None;
+        let ino = match self
+            .get_inode(&parent)
+            .and_then(|parent| parent.children.get(name))
         {
-            let parent_node = self.get_inode(&parent).unwrap(); // Will exist
-            for child in parent_node.children.as_ref().unwrap() {
-                if name == self.get_inode(&child).unwrap().name {
-                    ino = Some(child.clone());
-                    break;
-                }
+            None => {
+                reply.error(ENOENT);
+                return;
             }
-        }
+            Some(ino) => ino.clone(),
+        };
 
         // Deallocate inode
-        match ino {
-            None => {
-                error!("rmdir: Failed to deallocate inode");
+        match self.remove_inode(&ino) {
+            Ok(_) => {}
+            Err(e) => {
+                error!("rmdir: {}", e);
                 reply.error(EIO);
                 return;
             }
-            Some(ino) => match self.remove_inode(&ino) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("rmdir: {}", e);
-                    reply.error(EIO);
-                    return;
-                }
-            },
         };
 
         reply.ok();
@@ -800,7 +738,7 @@ impl Filesystem for IpfsMFS {
             blksize: 512,
         };
 
-        reply.attr(&TTL_0, &attr);
+        reply.attr(&TTL, &attr);
     }
 
     fn unlink(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
@@ -838,32 +776,25 @@ impl Filesystem for IpfsMFS {
         }
 
         // Fetch inode so it can be deallocated
-        let mut ino = None;
+        let ino = match self
+            .get_inode(&parent)
+            .and_then(|parent| parent.children.get(name))
         {
-            let parent_node = self.get_inode(&parent).unwrap(); // Will exist
-            for child in parent_node.children.as_ref().unwrap() {
-                if name == self.get_inode(&child).unwrap().name {
-                    ino = Some(child.clone());
-                    break;
-                }
+            None => {
+                reply.error(ENOENT);
+                return;
             }
-        }
+            Some(ino) => ino.clone(),
+        };
 
         // Deallocate inode
-        match ino {
-            None => {
-                error!("unlink: Failed to deallocate inode");
+        match self.remove_inode(&ino) {
+            Ok(_) => {}
+            Err(e) => {
+                error!("unlink: {}", e);
                 reply.error(EIO);
                 return;
             }
-            Some(ino) => match self.remove_inode(&ino) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("unlink: {}", e);
-                    reply.error(EIO);
-                    return;
-                }
-            },
         };
 
         reply.ok();
