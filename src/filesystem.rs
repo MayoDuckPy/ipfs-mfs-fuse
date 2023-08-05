@@ -3,17 +3,32 @@ use fuser::{
     ReplyEntry, ReplyWrite, Request, TimeOrNow,
 };
 // use ipfs_api_backend_hyper::IpfsClient;
-use libc::{EEXIST, EIO, ENOENT, ENOSYS};
-use log::{error, info};
+use libc::{EEXIST, EINVAL, EIO, ENOENT, ENOSYS};
+use log::{debug, error, warn};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::os::raw::c_int;
 use std::time::{Duration, SystemTime};
 
 use crate::ipfs::IpfsFuseAdapter;
+use FsError::*;
 
+// const FUSE_CAP_WRITEBACK_CACHE: u32 = 1 << 16;
 const FUSE_CAP_NO_OPEN_SUPPORT: u32 = 1 << 17;
 const FUSE_CAP_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
+
+// Short TTL required as actual data is handled by IPFS and not the kernel.
+// A long TTL will delay content from updating.
+const TTL: Duration = Duration::new(0, 50); // 0 second
+
+#[derive(Debug)]
+enum FsError {
+    NoParent,
+    FileExists,
+    InodeNotFound,
+    InvalidString,
+    InvalidFiletype,
+}
 
 struct IpfsInode {
     name: String,
@@ -26,10 +41,6 @@ pub struct IpfsMFS {
     // ipfs_client: Option<IpfsClient>,
     inodes: Box<HashMap<u64, IpfsInode>>,
 }
-
-// Short TTL required as actual data is handled by IPFS and not the kernel.
-// A long TTL will delay content from updating.
-const TTL: Duration = Duration::new(0, 50); // 0 second
 
 // TODO: Print errors as they occur instead of returning them (otherwise create error enums)
 impl IpfsMFS {
@@ -50,10 +61,6 @@ impl IpfsMFS {
         }
     }
 
-    fn contains_key(&self, inode: &u64) -> bool {
-        self.inodes.contains_key(inode)
-    }
-
     /// Returns a reference to the associated inode data struct.
     fn get_inode(&self, inode: &u64) -> Option<&IpfsInode> {
         self.inodes.get(inode)
@@ -64,15 +71,14 @@ impl IpfsMFS {
         self.inodes.get_mut(inode)
     }
 
-    /// Writes a path to a new inode and return the inode in a Result. Otherwise,
-    /// returns an error string.
-    fn write_inode(&mut self, parent: u64, name: &str) -> Result<u64, String> {
+    /// Writes a path to a new inode and return the inode in a Result.
+    fn write_inode(&mut self, parent: u64, name: &str) -> Result<u64, FsError> {
         let ino = (self.inodes.len() + 1) as u64;
-        let parent_node = self.get_mut_inode(&parent).expect("Parent exists");
+        let parent_node = self.get_mut_inode(&parent).ok_or(NoParent)?;
 
         // Add child to parent
         match parent_node.children.contains_key(name) {
-            true => return Err(String::from("Inode already exists")),
+            true => return Err(FileExists),
             false => parent_node.children.insert(name.to_string(), ino),
         };
 
@@ -88,17 +94,15 @@ impl IpfsMFS {
         Ok(ino)
     }
 
-    fn remove_inode(&mut self, inode: &u64) -> Result<(), String> {
-        let mut node = match self.inodes.remove(&inode) {
-            Some(node) => node,
-            None => return Err(String::from("Failed to remove inode")),
-        };
+    /// Remove an inode
+    fn remove_inode(&mut self, inode: &u64) -> Result<(), FsError> {
+        let mut node = self.inodes.remove(&inode).ok_or(InodeNotFound)?;
 
         // Remove from parent dir
         match node.parent {
-            None => {}
+            None => return Err(NoParent),
             Some(parent) => {
-                let parent = self.get_mut_inode(&parent).expect("Parent should exist");
+                let parent = self.get_mut_inode(&parent).ok_or(NoParent)?;
                 parent.children.remove(&node.name);
             }
         }
@@ -108,7 +112,7 @@ impl IpfsMFS {
         if node.children.is_empty() != true {
             for (_, ino) in node.children.iter_mut() {
                 match self.get_mut_inode(&ino) {
-                    None => return Err(String::from("Orphaned inode does not exist")),
+                    None => return Err(InodeNotFound),
                     Some(child) => child.parent = None,
                 }
             }
@@ -118,9 +122,9 @@ impl IpfsMFS {
     }
 
     /// Recursively constructs and returns an inode's full path.
-    fn get_inode_path(&self, inode: &u64) -> Result<String, String> {
+    fn get_inode_path(&self, inode: &u64) -> Result<String, FsError> {
         let node = match self.get_inode(inode) {
-            None => return Err(String::from("Invalid inode")),
+            None => return Err(InodeNotFound),
             Some(node) => node,
         };
 
@@ -130,17 +134,17 @@ impl IpfsMFS {
                 return Ok(String::from("/"));
             }
 
-            return Err(String::from("Orphaned inode"));
+            return Err(NoParent);
         }
 
         // Traverse parent nodes to construct path
-        let parent_path = match self.get_inode_path(&node.parent.unwrap()) {
+        let parent_path = match self.get_inode_path(&node.parent.ok_or(NoParent)?) {
             Ok(path) => {
                 // This check prevents a '//' being prefixed for the root dir.
                 // E.g. '//path/to/file' instead of '/path/to/file'.
                 //
-                // Things should work without this check but this is good for
-                // posterity and debugging.
+                // Things should work without this check but keep for
+                // correctness anyway to prevent future bugs.
                 if path.len() > 1 {
                     path
                 } else {
@@ -160,7 +164,7 @@ impl Filesystem for IpfsMFS {
         match config.add_capabilities(FUSE_CAP_NO_OPEN_SUPPORT | FUSE_CAP_NO_OPENDIR_SUPPORT) {
             Ok(_) => Ok(()),
             Err(e) => {
-                error!("init: {}", e);
+                error!("{}", e);
                 return Err(-1);
             }
         }
@@ -171,7 +175,7 @@ impl Filesystem for IpfsMFS {
         let parent_path = match self.get_inode_path(&parent) {
             Ok(path) => path,
             Err(e) => {
-                error!("lookup: Failed to get parent path ({})", e);
+                debug!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
@@ -180,8 +184,8 @@ impl Filesystem for IpfsMFS {
         let name = match name.to_str() {
             Some(name) => name,
             None => {
-                error!("lookup: Failed converting OsStr to str");
-                reply.error(ENOENT);
+                warn!("{:?}: {}", InvalidString, name.to_string_lossy());
+                reply.error(EINVAL);
                 return;
             }
         };
@@ -189,8 +193,7 @@ impl Filesystem for IpfsMFS {
         let stats =
             match ipfs_adapter.mfs_stat(&self.ipfs_uri, &format!("{}/{}", parent_path, name)) {
                 Ok(stats) => stats,
-                Err(e) => {
-                    info!("lookup: {}", e);
+                Err(_) => {
                     reply.error(ENOENT);
                     return;
                 }
@@ -211,6 +214,7 @@ impl Filesystem for IpfsMFS {
                 perm = 0o755 | 4;
             }
             _ => {
+                warn!("{:?}", InvalidFiletype);
                 reply.error(ENOENT);
                 return;
             }
@@ -250,7 +254,7 @@ impl Filesystem for IpfsMFS {
     }
 
     fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
-        if self.inodes.contains_key(&ino) != true {
+        if !self.inodes.contains_key(&ino) {
             reply.error(ENOENT);
             return;
         }
@@ -258,7 +262,7 @@ impl Filesystem for IpfsMFS {
         let path = match self.get_inode_path(&ino) {
             Ok(path) => path,
             Err(e) => {
-                error!("getattr: Failed to get parent path ({})", e);
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
@@ -267,7 +271,7 @@ impl Filesystem for IpfsMFS {
         let ipfs_adapter = IpfsFuseAdapter;
         let stats = match ipfs_adapter.mfs_stat(&self.ipfs_uri, &path) {
             Ok(stats) => stats,
-            Err(_) => {
+            Err(_e) => {
                 reply.error(ENOENT);
                 return;
             }
@@ -288,6 +292,7 @@ impl Filesystem for IpfsMFS {
                 perm = 0o755 | 4;
             }
             _ => {
+                warn!("{:?}", InvalidFiletype);
                 reply.error(ENOSYS);
                 return;
             }
@@ -327,7 +332,7 @@ impl Filesystem for IpfsMFS {
         let parent_path = match self.get_inode_path(&parent) {
             Ok(path) => path,
             Err(e) => {
-                error!("mkdir: Failed to get parent path ({})", e);
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
@@ -336,8 +341,8 @@ impl Filesystem for IpfsMFS {
         let name = match name.to_str() {
             Some(name) => name,
             None => {
-                error!("mkdir: Failed converting OsStr to Str");
-                reply.error(ENOENT);
+                warn!("{:?}: {}", InvalidString, name.to_string_lossy());
+                reply.error(EINVAL);
                 return;
             }
         };
@@ -350,8 +355,7 @@ impl Filesystem for IpfsMFS {
             true,
         ) {
             Ok(_) => {}
-            Err(e) => {
-                error!("mkdir: {}", e);
+            Err(_) => {
                 reply.error(EIO);
                 return;
             }
@@ -361,8 +365,13 @@ impl Filesystem for IpfsMFS {
         let ino = match self.write_inode(parent, name) {
             Ok(ino) => ino,
             Err(e) => {
-                error!("mkdir: {}", e);
-                reply.error(EIO);
+                if let FileExists = e {
+                    reply.error(EEXIST);
+                } else {
+                    warn!("{:?}", e);
+                    reply.error(EIO);
+                }
+
                 return;
             }
         };
@@ -400,20 +409,27 @@ impl Filesystem for IpfsMFS {
     ) {
         let path = match self.get_inode_path(&parent) {
             Ok(path) => path,
-            Err(_) => {
+            Err(e) => {
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
         };
 
-        let name = name.to_str().unwrap();
+        let name = match name.to_str() {
+            Some(name) => name,
+            None => {
+                warn!("{:?}: {}", InvalidString, name.to_string_lossy());
+                reply.error(EINVAL);
+                return;
+            }
+        };
 
         // Add file to IPFS by writing a zero-size buffer
         let ipfs_adapter = IpfsFuseAdapter;
-        if let Err(e) =
+        if let Err(_) =
             ipfs_adapter.mfs_write(&self.ipfs_uri, &format!("{}/{}", path, name), 0, 0, &[])
         {
-            error!("mknod: {}", e);
             reply.error(EIO);
             return;
         }
@@ -422,8 +438,13 @@ impl Filesystem for IpfsMFS {
         let ino = match self.write_inode(parent, name) {
             Ok(ino) => ino,
             Err(e) => {
-                error!("Failed to write inode {}", e);
-                reply.error(EIO);
+                if let FileExists = e {
+                    reply.error(EEXIST);
+                } else {
+                    warn!("{:?}", e);
+                    reply.error(EIO);
+                }
+
                 return;
             }
         };
@@ -474,7 +495,8 @@ impl Filesystem for IpfsMFS {
     ) {
         let path = match self.get_inode_path(&ino) {
             Ok(path) => path,
-            Err(_) => {
+            Err(e) => {
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
@@ -483,8 +505,7 @@ impl Filesystem for IpfsMFS {
         let ipfs_adapter = IpfsFuseAdapter;
         let data = match ipfs_adapter.mfs_read(&self.ipfs_uri, &path, offset, size as i64) {
             Ok(data) => data,
-            Err(e) => {
-                error!("read: {}", e);
+            Err(_) => {
                 reply.error(EIO);
                 return;
             }
@@ -501,7 +522,8 @@ impl Filesystem for IpfsMFS {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        if self.inodes.contains_key(&ino) == false {
+        if !self.inodes.contains_key(&ino) {
+            error!("{:?}", InodeNotFound);
             reply.error(ENOENT);
             return;
         }
@@ -509,14 +531,20 @@ impl Filesystem for IpfsMFS {
         let path = match self.get_inode_path(&ino) {
             Ok(path) => path,
             Err(e) => {
-                error!("readdir: Failed to get parent path ({})", e);
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
         };
 
         let ipfs_adapter = IpfsFuseAdapter;
-        let entries = ipfs_adapter.mfs_ls(&self.ipfs_uri, &path);
+        let entries = match ipfs_adapter.mfs_ls(&self.ipfs_uri, &path) {
+            Ok(entries) => entries,
+            Err(_) => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
             // Add paths to inode table as we discover them
@@ -533,7 +561,7 @@ impl Filesystem for IpfsMFS {
     }
 
     fn readlink(&mut self, _req: &Request, ino: u64, reply: ReplyData) {
-        if self.contains_key(&ino) == false {
+        if !self.inodes.contains_key(&ino) {
             reply.error(ENOENT);
             return;
         }
@@ -565,7 +593,7 @@ impl Filesystem for IpfsMFS {
         let parent_path = match self.get_inode_path(&parent) {
             Ok(path) => path,
             Err(e) => {
-                error!("rename: Failed to get parent path ({})", e);
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
@@ -574,7 +602,7 @@ impl Filesystem for IpfsMFS {
         let new_parent_path = match self.get_inode_path(&newparent) {
             Ok(path) => path,
             Err(e) => {
-                error!("rename: Failed to get parent path ({})", e);
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
@@ -585,8 +613,7 @@ impl Filesystem for IpfsMFS {
 
         // Attempt rename on IPFS
         let ipfs_adapter = IpfsFuseAdapter;
-        if let Err(e) = ipfs_adapter.mfs_rename(&self.ipfs_uri, &path, &dest) {
-            error!("rename: {}", e);
+        if let Err(_) = ipfs_adapter.mfs_rename(&self.ipfs_uri, &path, &dest) {
             reply.error(ENOENT);
             return;
         };
@@ -607,8 +634,7 @@ impl Filesystem for IpfsMFS {
             None => {
                 // Check if call failed due to duplicate inodes
                 if parent != newparent {
-                    error!("Failed to fetch parent inodes");
-                    reply.error(ENOENT);
+                    reply.error(EIO);
                     return;
                 }
             }
@@ -622,7 +648,6 @@ impl Filesystem for IpfsMFS {
                 // Add inode to new parent
                 // let new_parent = self.get_mut_inode(&newparent).expect("Parent should exist");
                 if new_parent.children.contains_key(newname) {
-                    error!("Path '{}' already exists", dest);
                     reply.error(EEXIST);
                     return;
                 }
@@ -650,7 +675,7 @@ impl Filesystem for IpfsMFS {
         let parent_path = match self.get_inode_path(&parent) {
             Ok(path) => path,
             Err(e) => {
-                error!("rmdir: Failed to get parent path ({})", e);
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
@@ -659,19 +684,18 @@ impl Filesystem for IpfsMFS {
         let name = match name.to_str() {
             Some(name) => name,
             None => {
-                error!("rmdir: Failed converting OsStr to Str");
-                reply.error(ENOENT);
+                warn!("{:?}: {}", InvalidString, name.to_string_lossy());
+                reply.error(EINVAL);
                 return;
             }
         };
 
-        if let Err(e) = ipfs_adapter.mfs_rm(
+        if let Err(_) = ipfs_adapter.mfs_rm(
             &self.ipfs_uri,
             &format!("{}/{}", parent_path, name),
             true,
             false,
         ) {
-            error!("rmdir: {}", e);
             reply.error(ENOENT);
             return;
         }
@@ -692,7 +716,7 @@ impl Filesystem for IpfsMFS {
         match self.remove_inode(&ino) {
             Ok(_) => {}
             Err(e) => {
-                error!("rmdir: {}", e);
+                error!("{:?}", e);
                 reply.error(EIO);
                 return;
             }
@@ -746,7 +770,7 @@ impl Filesystem for IpfsMFS {
         let parent_path = match self.get_inode_path(&parent) {
             Ok(path) => path,
             Err(e) => {
-                error!("unlink: Failed to get parent path ({})", e);
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
@@ -755,8 +779,8 @@ impl Filesystem for IpfsMFS {
         let name = match name.to_str() {
             Some(name) => name,
             None => {
-                error!("unlink: Failed converting OsStr to Str");
-                reply.error(ENOENT);
+                warn!("{:?}: {}", InvalidString, name.to_string_lossy());
+                reply.error(EINVAL);
                 return;
             }
         };
@@ -768,8 +792,7 @@ impl Filesystem for IpfsMFS {
             false,
         ) {
             Ok(_) => {}
-            Err(e) => {
-                error!("unlink: {}", e);
+            Err(_) => {
                 reply.error(ENOENT);
                 return;
             }
@@ -791,7 +814,7 @@ impl Filesystem for IpfsMFS {
         match self.remove_inode(&ino) {
             Ok(_) => {}
             Err(e) => {
-                error!("unlink: {}", e);
+                error!("{:?}", e);
                 reply.error(EIO);
                 return;
             }
@@ -800,6 +823,8 @@ impl Filesystem for IpfsMFS {
         reply.ok();
     }
 
+    // FIXME: Data integrity lost when writing large files (do not truncate when offset > 0)
+    // FIXME: Possible inode corruption when writing large files?
     fn write(
         &mut self,
         _req: &Request<'_>,
@@ -815,17 +840,16 @@ impl Filesystem for IpfsMFS {
         let path = match self.get_inode_path(&ino) {
             Ok(path) => path,
             Err(e) => {
-                error!("write: {}", e);
+                warn!("{:?}", e);
                 reply.error(ENOENT);
                 return;
             }
         };
 
         let ipfs_adapter = IpfsFuseAdapter;
-        if let Err(e) =
+        if let Err(_) =
             ipfs_adapter.mfs_write(&self.ipfs_uri, &path, offset, data.len() as i64, data)
         {
-            error!("write: {}", e);
             reply.error(EIO);
             return;
         }

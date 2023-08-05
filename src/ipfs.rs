@@ -2,7 +2,7 @@ use fuser::FileType;
 use futures::TryStreamExt;
 use ipfs_api_backend_hyper::request::{FilesMkdir, FilesMv, FilesRead, FilesRm, FilesWrite};
 use ipfs_api_backend_hyper::{IpfsApi, IpfsClient, TryFromUri};
-// use log::debug;
+use log::debug;
 use std::io::Cursor;
 
 #[derive(Clone)]
@@ -20,12 +20,18 @@ pub struct IpfsFuseAdapter;
 // TODO: Replace io_uring instances with global runtime
 // TODO: Return error if client fails to init
 impl IpfsFuseAdapter {
-    pub fn mfs_ls(self, uri: &str, path: &str) -> Vec<IpfsFileAttr> {
+    pub fn mfs_ls(self, uri: &str, path: &str) -> Result<Vec<IpfsFileAttr>, ()> {
         let mut entries = vec![];
 
         tokio_uring::start(async {
             let client = IpfsClient::from_str(uri).unwrap();
-            let files = client.files_ls(Some(path)).await.unwrap();
+            let files = match client.files_ls(Some(path)).await {
+                Ok(files) => files,
+                Err(e) => {
+                    debug!("{}", e.to_string());
+                    return Err(());
+                }
+            };
 
             for (i, entry) in files.entries.iter().enumerate() {
                 let attrs = IpfsFileAttr {
@@ -42,7 +48,7 @@ impl IpfsFuseAdapter {
                 entries.insert(i, attrs);
             }
 
-            entries
+            Ok(entries)
         })
     }
 
@@ -53,7 +59,7 @@ impl IpfsFuseAdapter {
         parents: bool,
         cid_version: i32,
         flush: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), ()> {
         let req = FilesMkdir {
             path,
             parents: Some(parents),
@@ -66,18 +72,15 @@ impl IpfsFuseAdapter {
             let client = IpfsClient::from_str(uri).unwrap();
             match client.files_mkdir_with_options(req).await {
                 Ok(_) => return Ok(()),
-                Err(e) => return Err(e.to_string()),
+                Err(e) => {
+                    debug!("{}", e.to_string());
+                    return Err(());
+                }
             };
         })
     }
 
-    pub fn mfs_read(
-        self,
-        uri: &str,
-        path: &str,
-        offset: i64,
-        count: i64,
-    ) -> Result<Vec<u8>, String> {
+    pub fn mfs_read(self, uri: &str, path: &str, offset: i64, count: i64) -> Result<Vec<u8>, ()> {
         let req = FilesRead {
             path,
             offset: Some(offset),
@@ -93,14 +96,17 @@ impl IpfsFuseAdapter {
                 .await
             {
                 Ok(res) => res,
-                Err(e) => return Err(e.to_string()),
+                Err(e) => {
+                    debug!("{}", e.to_string());
+                    return Err(());
+                }
             };
 
             Ok(res.to_vec())
         })
     }
 
-    pub fn mfs_rename(self, uri: &str, path: &str, dest: &str) -> Result<(), String> {
+    pub fn mfs_rename(self, uri: &str, path: &str, dest: &str) -> Result<(), ()> {
         let req = FilesMv {
             path,
             dest,
@@ -111,12 +117,15 @@ impl IpfsFuseAdapter {
             let client = IpfsClient::from_str(uri).unwrap();
             match client.files_mv_with_options(req).await {
                 Ok(_) => return Ok(()),
-                Err(e) => return Err(e.to_string()),
+                Err(e) => {
+                    debug!("{}", e.to_string());
+                    return Err(());
+                }
             };
         })
     }
 
-    pub fn mfs_rm(self, uri: &str, path: &str, recursive: bool, force: bool) -> Result<(), String> {
+    pub fn mfs_rm(self, uri: &str, path: &str, recursive: bool, force: bool) -> Result<(), ()> {
         let req = FilesRm {
             path,
             recursive: Some(recursive),
@@ -127,17 +136,23 @@ impl IpfsFuseAdapter {
             let client = IpfsClient::from_str(uri).unwrap();
             match client.files_rm_with_options(req).await {
                 Ok(_) => return Ok(()),
-                Err(e) => return Err(e.to_string()),
+                Err(e) => {
+                    debug!("{}", e.to_string());
+                    return Err(());
+                }
             };
         })
     }
 
-    pub fn mfs_stat(self, uri: &str, path: &str) -> Result<IpfsFileAttr, String> {
+    pub fn mfs_stat(self, uri: &str, path: &str) -> Result<IpfsFileAttr, ()> {
         tokio_uring::start(async {
             let client = IpfsClient::from_str(uri).unwrap();
             let stats = match client.files_stat(&path).await {
                 Ok(stats) => stats,
-                Err(e) => return Err(e.to_string()),
+                Err(e) => {
+                    debug!("{}", e.to_string());
+                    return Err(());
+                }
             };
 
             let attr = IpfsFileAttr {
@@ -163,13 +178,13 @@ impl IpfsFuseAdapter {
         offset: i64,
         count: i64,
         data: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<(), ()> {
         let req = FilesWrite {
             path,
             offset: Some(offset),
             count: Some(count),
-            create: Some(true),
-            truncate: Some(true),
+            create: Some(true),   // TODO: Set false for offset > 0
+            truncate: Some(true), // TODO: Set false for offset > 0
             cid_version: Some(1),
             flush: Some(true),
             parents: None,
@@ -182,7 +197,10 @@ impl IpfsFuseAdapter {
             let client = IpfsClient::from_str(uri).unwrap();
             let cursor = Cursor::new(data.to_owned());
             match client.files_write_with_options(req, cursor).await {
-                Err(e) => Err(e.to_string()),
+                Err(e) => {
+                    debug!("{}", e.to_string());
+                    return Err(());
+                }
                 _ => Ok(()),
             }
         })
