@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use crate::ipfs::IpfsFuseAdapter;
 use FsError::*;
 
-// const FUSE_CAP_WRITEBACK_CACHE: u32 = 1 << 16;
+const FUSE_CAP_WRITEBACK_CACHE: u32 = 1 << 16;
 const FUSE_CAP_NO_OPEN_SUPPORT: u32 = 1 << 17;
 const FUSE_CAP_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
 
@@ -161,7 +161,9 @@ impl IpfsMFS {
 // TODO: readlink?, symlink
 impl Filesystem for IpfsMFS {
     fn init(&mut self, _req: &Request<'_>, config: &mut KernelConfig) -> Result<(), c_int> {
-        match config.add_capabilities(FUSE_CAP_NO_OPEN_SUPPORT | FUSE_CAP_NO_OPENDIR_SUPPORT) {
+        match config.add_capabilities(
+            FUSE_CAP_WRITEBACK_CACHE | FUSE_CAP_NO_OPEN_SUPPORT | FUSE_CAP_NO_OPENDIR_SUPPORT,
+        ) {
             Ok(_) => Ok(()),
             Err(e) => {
                 error!("{}", e);
@@ -618,43 +620,39 @@ impl Filesystem for IpfsMFS {
             return;
         };
 
-        // Fetch inode so it can be modified
+        // Check if file already exists
+        match self.get_inode(&newparent) {
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+            Some(new_parent) => {
+                if new_parent.children.contains_key(newname) {
+                    // Cannot rename as file already exists
+                    reply.error(EEXIST);
+                    return;
+                }
+            }
+        }
+
         let ino = match self
-            .get_inode(&parent)
-            .and_then(|parent| parent.children.get(name))
+            .get_mut_inode(&parent)
+            .and_then(|parent| parent.children.remove(name))
         {
             None => {
                 reply.error(ENOENT);
                 return;
             }
-            Some(ino) => ino.clone(),
+            Some(ino) => ino,
         };
 
-        match self.inodes.get_many_mut([&parent, &newparent]) {
+        match self.get_mut_inode(&newparent) {
             None => {
-                // Check if call failed due to duplicate inodes
-                if parent != newparent {
-                    reply.error(EIO);
-                    return;
-                }
+                reply.error(ENOENT);
+                return;
             }
-            Some(inodes) => {
-                let [prev_parent, new_parent] = inodes;
-
-                // Detach inode from previous parent
-                // let prev_parent = self.get_mut_inode(&parent).expect("Parent should exist");
-                prev_parent.children.remove(name);
-
-                // Add inode to new parent
-                // let new_parent = self.get_mut_inode(&newparent).expect("Parent should exist");
-                if new_parent.children.contains_key(newname) {
-                    reply.error(EEXIST);
-                    return;
-                }
-
-                new_parent.children.insert(name.to_string(), ino);
-            }
-        }
+            Some(new_parent) => new_parent.children.insert(newname.to_string(), ino),
+        };
 
         match self.get_mut_inode(&ino) {
             None => {
@@ -663,7 +661,7 @@ impl Filesystem for IpfsMFS {
             }
             Some(ino) => {
                 ino.parent = Some(newparent);
-                ino.name = String::from(newname);
+                ino.name = newname.to_string();
             }
         };
 
@@ -823,8 +821,7 @@ impl Filesystem for IpfsMFS {
         reply.ok();
     }
 
-    // FIXME: Data integrity lost when writing large files (do not truncate when offset > 0)
-    // FIXME: Possible inode corruption when writing large files?
+    // FIXME: Inode corruption seemingly occurs after write
     fn write(
         &mut self,
         _req: &Request<'_>,

@@ -183,8 +183,8 @@ impl IpfsFuseAdapter {
             path,
             offset: Some(offset),
             count: Some(count),
-            create: Some(true),   // TODO: Set false for offset > 0
-            truncate: Some(true), // TODO: Set false for offset > 0
+            create: if offset > 0 { Some(false) } else { Some(true) },
+            truncate: if offset > 0 { Some(false) } else { Some(true) },
             cid_version: Some(1),
             flush: Some(true),
             parents: None,
